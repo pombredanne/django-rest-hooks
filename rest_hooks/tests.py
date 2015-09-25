@@ -4,12 +4,23 @@ from mock import patch, MagicMock, ANY
 
 from datetime import datetime
 
+try:
+    # Django <= 1.6 backwards compatibility
+    from django.utils import simplejson as json
+except ImportError:
+    # Django >= 1.7
+    import json
+
 from django.conf import settings
 from django.contrib.auth.models import User
-from django.contrib.comments.models import Comment
+try:
+    from django.contrib.comments.models import Comment
+    comments_app_label = 'comments'
+except ImportError:
+    from django_comments.models import Comment
+    comments_app_label = 'django_comments'
 from django.contrib.sites.models import Site
 from django.test import TestCase
-from django.utils import simplejson as json
 
 from rest_hooks import models
 Hook = models.Hook
@@ -36,10 +47,10 @@ class RESTHooksTest(TestCase):
         self.site = Site.objects.create(domain='example.com', name='example.com')
 
         models.HOOK_EVENTS = {
-            'comment.added':        'comments.Comment.created',
-            'comment.changed':      'comments.Comment.updated',
-            'comment.removed':      'comments.Comment.deleted',
-            'comment.moderated':    'comments.Comment.moderated',
+            'comment.added':        comments_app_label + '.Comment.created',
+            'comment.changed':      comments_app_label + '.Comment.updated',
+            'comment.removed':      comments_app_label + '.Comment.deleted',
+            'comment.moderated':    comments_app_label + '.Comment.moderated',
             'special.thing':        None
         }
 
@@ -234,13 +245,13 @@ class RESTHooksTest(TestCase):
                 comment.delete()
             total = datetime.now() - early
 
-            print total
+            print(total)
 
             while True:
                 response = requests.get(target + '/view')
                 sent = response.json
                 if sent:
-                    print len(sent), models.async_requests.total_sent
+                    print(len(sent), models.async_requests.total_sent)
                 if models.async_requests.total_sent >= (30 * (n+1)):
                     time.sleep(5)
                     break

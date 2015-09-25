@@ -1,4 +1,6 @@
-## What are Django REST Hooks?
+
+## What are Django REST Hooks? [![Build Status](https://travis-ci.org/zapier/django-rest-hooks.svg?branch=master)](https://travis-ci.org/zapier/django-rest-hooks)
+
 
 REST Hooks are fancier versions of webhooks. Traditional webhooks are usually
 managed manually by the user, but REST Hooks are not! They encourage RESTful
@@ -14,8 +16,8 @@ dead simple. Here's how to get started:
 3. Start sending hooks!
 
 Using our **built-in actions**, zero work is required to support *any* basic `created`,
-`updated`, and `deleted` actions across any Django model. We also allow for 
-**custom actions** (IE: beyond **C**R**UD**) to be simply defined and triggered 
+`updated`, and `deleted` actions across any Django model. We also allow for
+**custom actions** (IE: beyond **C**R**UD**) to be simply defined and triggered
 for any model, as well as truly custom events that let you send arbitrary
 payloads.
 
@@ -73,10 +75,10 @@ INSTALLED_APPS = (
 HOOK_EVENTS = {
     # 'any.event.name': 'App.Model.Action' (created/updated/deleted)
     'book.added':       'bookstore.Book.created',
-    'book.changed':     'bookstore.Book.updated',
+    'book.changed':     'bookstore.Book.updated+',
     'book.removed':     'bookstore.Book.deleted',
     # and custom events, no extra meta data needed
-    'book.read':         None,
+    'book.read':         'bookstore.Book.read',
     'user.logged_in':    None
 }
 
@@ -85,6 +87,9 @@ HOOK_EVENTS = {
 class Book(models.Model):
     # NOTE: it is important to have a user property
     # as we use it to help find and trigger each Hook
+    # which is specific to users. If you want a Hook to
+    # be triggered for all users, add '+' to built-in Hooks
+    # or pass user_override=False for custom_hook events
     user = models.ForeignKey('auth.User')
     # maybe user is off a related object, so try...
     # user = property(lambda self: self.intermediary.user)
@@ -115,8 +120,8 @@ class Book(models.Model):
         from rest_hooks.signals import hook_event
         hook_event.send(
             sender=self.__class__,
-            event_name='book.read',
-            obj=self # the Book object
+            action='read',
+            instance=self # the Book object
         )
 ```
 
@@ -239,8 +244,11 @@ DELETE http://your-app.com/api/hooks/123?username=me&api_key=abcdef
 ```
 
 If you already have a REST API, this should be relatively straightforward,
-but if not, Tastypie is a great choice. Some reference Tastypie + REST Hook
-code is below.
+but if not, Tastypie is a great choice.
+
+Some reference [Tastypie](http://tastypieapi.org/) or [Django REST framework](http://django-rest-framework.org/): + REST Hook code is below.
+
+#### Tastypie
 
 ```python
 ### resources.py ###
@@ -278,7 +286,53 @@ urlpatterns = patterns('',
     (r'^api/', include(v1_api.urls)),
 )
 ```
+#### Django REST framework
 
+```python
+### serializers.py ###
+
+from rest_framework import serializers
+
+from rest_hooks.models import Hook
+
+
+class HookSerializer(serializers.ModelSerializer):
+
+    class Meta:
+        model = Hook
+        read_only_fields = ('user',)
+
+### views.py ###
+
+from rest_framework import viewsets
+
+from rest_hooks.models import Hook
+
+from .serializers import HookSerializer
+
+
+class HookViewSet(viewsets.ModelViewSet):
+    """
+    Retrieve, create, update or destroy webhooks.
+    """
+    model = Hook
+    serializer_class = HookSerializer
+
+    def pre_save(self, obj):
+        super(HookViewSet, self).pre_save(obj)
+        obj.user = self.request.user
+
+### urls.py ###
+
+from rest_framework import routers
+
+from . import views
+
+router = routers.SimpleRouter(trailing_slash=False)
+router.register(r'webhooks', views.HookViewSet, 'webhook')
+
+urlpatterns = router.urls
+```
 
 ### Some gotchas:
 
@@ -297,9 +351,9 @@ HOOK_DELIVERER = 'path.to.tasks.deliver_hook_wrapper'
 ### tasks.py ###
 
 from celery.task import Task
-import requests
 
-from django.utils import simplejson as json
+import json
+import requests
 
 
 class DeliverHook(Task):
@@ -319,5 +373,5 @@ class DeliverHook(Task):
 deliver_hook_wrapper = DeliverHook.delay
 ```
 
-We also don't handle retries or cleanup. Generally, if you get a 410 or
-a bunch of 4xx or 5xx, you should delete the Hook and let the user know.
+We also don't handle retries or cleanup. Generally, if you get a `410` or
+a bunch of `4xx` or `5xx`, you should delete the Hook and let the user know.
