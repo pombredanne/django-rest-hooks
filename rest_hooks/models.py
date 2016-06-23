@@ -1,5 +1,8 @@
+from collections import OrderedDict
+
 import requests
 
+from django.core.exceptions import ValidationError
 from django.conf import settings
 from django.core import serializers
 from django.db import models
@@ -38,9 +41,15 @@ class Hook(models.Model):
 
     user = models.ForeignKey(AUTH_USER_MODEL, related_name='hooks')
     event = models.CharField('Event', max_length=64,
-                                      db_index=True,
-                                      choices=[(e, e) for e in HOOK_EVENTS.keys()])
+                                      db_index=True)
     target = models.URLField('Target URL', max_length=255)
+
+    def clean(self):
+        """ Validation for events. """
+        if self.event not in HOOK_EVENTS.keys():
+            raise ValidationError(
+                "Invalid hook event {evt}.".format(evt=self.event)
+            )
 
     def dict(self):
         return {
@@ -61,9 +70,17 @@ class Hook(models.Model):
             serializer = get_module(settings.HOOK_SERIALIZER)
             return serializer(instance, hook=self)
         # if no user defined serializers, fallback to the django builtin!
+        data = serializers.serialize('python', [instance])[0]
+        for k, v in data.items():
+            if isinstance(v, OrderedDict):
+                data[k] = dict(v)
+
+        if isinstance(data, OrderedDict):
+            data = dict(data)
+
         return {
             'hook': self.dict(),
-            'data': serializers.serialize('python', [instance])[0]
+            'data': data,
         }
 
     def deliver_hook(self, instance, payload_override=None):
@@ -102,6 +119,7 @@ from rest_hooks.signals import hook_event, raw_hook_event
 
 get_opts = lambda m: m._meta.concrete_model._meta
 
+
 @receiver(post_save, dispatch_uid='instance-saved-hook')
 def model_saved(sender, instance,
                         created,
@@ -116,6 +134,7 @@ def model_saved(sender, instance,
     action = 'created' if created else 'updated'
     distill_model_event(instance, model, action)
 
+
 @receiver(post_delete, dispatch_uid='instance-deleted-hook')
 def model_deleted(sender, instance,
                           using,
@@ -126,6 +145,7 @@ def model_deleted(sender, instance,
     opts = get_opts(instance)
     model = '.'.join([opts.app_label, opts.object_name])
     distill_model_event(instance, model, 'deleted')
+
 
 @receiver(hook_event, dispatch_uid='instance-custom-hook')
 def custom_action(sender, action,
@@ -138,6 +158,7 @@ def custom_action(sender, action,
     opts = get_opts(instance)
     model = '.'.join([opts.app_label, opts.object_name])
     distill_model_event(instance, model, action, user_override=user)
+
 
 @receiver(raw_hook_event, dispatch_uid='raw-custom-hook')
 def raw_custom_event(sender, event_name,

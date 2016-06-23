@@ -26,6 +26,7 @@ from rest_hooks import models
 Hook = models.Hook
 
 from rest_hooks import signals
+from rest_hooks.admin import HookForm
 
 
 class RESTHooksTest(TestCase):
@@ -44,7 +45,7 @@ class RESTHooksTest(TestCase):
         self.client = requests # force non-async for test cases
 
         self.user = User.objects.create_user('bob', 'bob@example.com', 'password')
-        self.site = Site.objects.create(domain='example.com', name='example.com')
+        self.site, created = Site.objects.get_or_create(domain='example.com', name='example.com')
 
         models.HOOK_EVENTS = {
             'comment.added':        comments_app_label + '.Comment.created',
@@ -54,9 +55,11 @@ class RESTHooksTest(TestCase):
             'special.thing':        None
         }
 
+        HookForm.ADMIN_EVENTS = [(x, x) for x in models.HOOK_EVENTS.keys()]
         settings.HOOK_DELIVERER = None
 
     def tearDown(self):
+        HookForm.ADMIN_EVENTS = [(x, x) for x in self.HOOK_EVENTS.keys()]
         models.HOOK_EVENTS = self.HOOK_EVENTS
         settings.HOOK_DELIVERER = self.HOOK_DELIVERER
 
@@ -260,7 +263,7 @@ class RESTHooksTest(TestCase):
         requests.delete(target + '/view') # cleanup to be polite
 
     def test_signal_emitted_upon_success(self):
-        wrapper =  lambda *args, **kwargs: None
+        wrapper = lambda *args, **kwargs: None
         mock_handler = MagicMock(wraps=wrapper)
 
         signals.hook_sent_event.connect(mock_handler, sender=Hook)
@@ -269,3 +272,29 @@ class RESTHooksTest(TestCase):
 
         payload['data']['fields']['submit_date'] = ANY
         mock_handler.assert_called_with(signal=ANY, sender=Hook, payload=payload, instance=comment, hook=hook)
+
+    def test_valid_form(self):
+
+        form_data = {
+            'user': self.user.id,
+            'target': "http://example.com",
+            'event': HookForm.ADMIN_EVENTS[0][0]
+        }
+        form = HookForm(data=form_data)
+        self.assertTrue(form.is_valid())
+
+    def test_form_save(self):
+        form_data = {
+            'user': self.user.id,
+            'target': "http://example.com",
+            'event': HookForm.ADMIN_EVENTS[0][0]
+        }
+        form = HookForm(data=form_data)
+
+        self.assertTrue(form.is_valid())
+        instance = form.save()
+        self.assertIsInstance(instance, Hook)
+
+    def test_invalid_form(self):
+        form = HookForm(data={})
+        self.assertFalse(form.is_valid())
