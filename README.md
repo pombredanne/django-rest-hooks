@@ -1,6 +1,7 @@
 [![Travis CI Build](https://img.shields.io/travis/zapier/django-rest-hooks/master.svg)](https://travis-ci.org/zapier/django-rest-hooks)
 [![PyPI Download](https://img.shields.io/pypi/v/django-rest-hooks.svg)](https://pypi.python.org/pypi/django-rest-hooks)
 [![PyPI Status](https://img.shields.io/pypi/status/django-rest-hooks.svg)](https://pypi.python.org/pypi/django-rest-hooks)
+
 ## What are Django REST Hooks?
 
 
@@ -32,6 +33,53 @@ If you want to make a Django form or API resource, you'll need to do that yourse
 (though we've provided some example bits of code below).
 
 
+### Changelog
+
+#### Version 1.6.0:
+
+Improvements:
+
+* Default handler of `raw_hook_event` uses the same logic as other handlers
+  (see "Backwards incompatible changes" for details).
+
+* Lookup of event_name by model+action_name now has a complexity of `O(1)`
+  instead of `O(len(settings.HOOK_EVENTS))`
+
+* `HOOK_CUSTOM_MODEL` is now similar to `AUTH_USER_MODEL`: must be of the form
+  `app_label.model_name` (for django 1.7+). If old value is of the form
+  `app_label.models.model_name` then it's automatically adapted.
+
+* `rest_hooks.models.Hook` is now really "swappable", so table creation is
+  skipped if you have different `settings.HOOK_CUSTOM_MODEL`
+
+* `rest_hooks.models.AbstractHook.deliver_hook` now accepts a callable as
+  `payload_override` argument (must accept 2 arguments: hook, instance). This
+  was added to support old behavior of `raw_custom_event`.
+
+Fixes:
+
+* HookAdmin.form now honors `settings.HOOK_CUSTOM_MODEL`
+
+* event_name determined from action+model is now consistent between runs (see
+  "Backwards incompatible changes")
+
+Backwards incompatible changes:
+
+* Dropped support for django 1.4
+* Custom `HOOK_FINDER`-s should accept and handle new argument `payload_override`.
+  Built-in finder `rest_hooks.utls.find_and_fire_hook` already does this.
+* If several event names in `settings.HOOK_EVENTS` share the same
+  `'app_label.model.action'` (including `'app_label.model.action+'`) then
+  `django.core.exceptions.ImproperlyConfigured` is raised
+* Receiver of `raw_hook_event` now uses the same logic as receivers of other
+  signals: checks event_name against settings.HOOK_EVENTS, verifies model (if
+  instance is passed), uses `HOOK_FINDER`. Old behaviour can be achieved by
+  using `trust_event_name=True`, or `instance=None` to fire a signal.
+* If you have `settings.HOOK_CUSTOM_MODEL` of the form different than
+  `app_label.models.model_name` or `app_label.model_name`, then it must
+  be changed to `app_label.model_name`.
+
+
 ### Development
 
 Running the tests for Django REST Hooks is very easy, just:
@@ -55,8 +103,9 @@ python runtests.py
 ```
 
 ### Requirements
-* Python (2.7, 3.3, 3.4)
-* Django (1.5, 1.6, 1.7, 1.8, 1.9)
+
+* Python 2 or 3 (tested on 2.7, 3.3, 3.4, 3.6)
+* Django 1.5+ (tested on 1.5, 1.6, 1.7, 1.8, 1.9, 1.10, 1.11, 2.0)
 
 ### Installing & Configuring
 
@@ -95,7 +144,7 @@ class Book(models.Model):
     # which is specific to users. If you want a Hook to
     # be triggered for all users, add '+' to built-in Hooks
     # or pass user_override=False for custom_hook events
-    user = models.ForeignKey('auth.User')
+    user = models.ForeignKey('auth.User', on_delete=models.CASCADE)
     # maybe user is off a related object, so try...
     # user = property(lambda self: self.intermediary.user)
 
@@ -135,7 +184,7 @@ handle the basic `created`, `updated` and `deleted` signals & events:
 
 ```python
 >>> from django.contrib.auth.models import User
->>> from rest_hooks.model import Hook
+>>> from rest_hooks.models import Hook
 >>> jrrtolkien = User.objects.create(username='jrrtolkien')
 >>> hook = Hook(user=jrrtolkien,
                 event='book.added',
@@ -299,15 +348,22 @@ urlpatterns = patterns('',
 ```python
 ### serializers.py ###
 
-from rest_framework import serializers
+from django.conf import settings
+from rest_framework import serializers, exceptions
 
 from rest_hooks.models import Hook
 
 
 class HookSerializer(serializers.ModelSerializer):
-
+    def validate_event(self, event):
+        if event not in settings.HOOK_EVENTS:
+            err_msg = "Unexpected event {}".format(event)
+            raise exceptions.ValidationError(detail=err_msg, code=400)
+        return event    
+    
     class Meta:
         model = Hook
+        fields = '__all__'
         read_only_fields = ('user',)
 
 ### views.py ###
@@ -323,6 +379,7 @@ class HookViewSet(viewsets.ModelViewSet):
     """
     Retrieve, create, update or destroy webhooks.
     """
+    queryset = Hook.objects.all()
     model = Hook
     serializer_class = HookSerializer
 
@@ -380,7 +437,7 @@ class DeliverHook(Task):
                 headers={'Content-Type': 'application/json'}
             )
             if response.status_code >= 500:
-                response.raise_for_response()
+                response.raise_for_status()
         except requests.ConnectionError:
             delay_in_seconds = 2 ** self.request.retries
             self.retry(countdown=delay_in_seconds)
@@ -401,3 +458,45 @@ def deliver_hook_wrapper(target, payload, instance, hook):
 
 We also don't handle retries or cleanup. Generally, if you get a `410` or
 a bunch of `4xx` or `5xx`, you should delete the Hook and let the user know.
+
+### Extend the Hook model:
+
+The default `Hook` model fields can be extended using the `AbstractHook` model.
+For example, to add a `is_active` field on your hooks:
+
+```python
+### settings.py ###
+
+HOOK_CUSTOM_MODEL = 'path.to.models.CustomHook'
+
+### models.py ###
+
+from django.db import models
+from rest_hooks.models import AbstractHook
+
+class CustomHook(AbstractHook):
+    is_active = models.BooleanField(default=True)
+```
+
+The extended `CustomHook` model can be combined with a the `HOOK_FINDER` setting
+for advanced QuerySet filtering. 
+
+```python
+### settings.py ###
+
+HOOK_FINDER = 'path.to.find_and_fire_hook'
+
+### utils.py ###
+
+from .models import CustomHook
+
+def find_and_fire_hook(event_name, instance, **kwargs):
+    filters = {
+        'event': event_name,
+        'is_active': True,
+    }
+
+    hooks = CustomHook.objects.filter(**filters)
+    for hook in hooks:
+        hook.deliver_hook(instance)
+```
